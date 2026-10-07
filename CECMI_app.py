@@ -1,5 +1,6 @@
 #-----------------------------------------------------------------------
 #Página Web de CECMI para el registro digital de elementos en congelador de -80°C
+#Archivo de la página principal
 #Autora: Andrea Solis, 593315
 #------------------------------------------------------------------------
 

@@ -10,7 +10,8 @@ import streamlit as st
 #Listar páginas
 pages = [
     st.Page("CECMI_app.py", title="Página Principal"),
-    st.Page("Mapa_muestras.py", title="Mapa de Muestras")
+    st.Page("Mapa_muestras.py", title="Mapa de Muestras"),
+    st.Page("Registro.py", title="Registro de movimientos"),
 ]
 
 #incluir navegación

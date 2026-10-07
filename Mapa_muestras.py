@@ -11,6 +11,7 @@ import pandas as pd
 import os
 import json
 import tempfile 
+from movements import record_movement
 
 #Funciones------------------------------------------------------------------
 #Funcion para inicializar datos
@@ -206,6 +207,12 @@ def remove_sample(box_key):
     st.session_state[state_key] = new_sample
     st.session_state[letter_key] = ""
     st.session_state[number_key] = ""
+    try:
+        record_movement("Salida", box["name"], toremove, current[toremove])
+    except Exception as e:
+        st.session_state["sample_notice"] = f"La muestra se extrajo, pero no se pudo registrar el movimiento: {e}"
+        st.session_state["sample_notice_type"] = "error"
+        return
     st.session_state["sample_notice"] = f"Se removió la muestra en {toremove} de {box['name']} y se guardó en disco"
     st.session_state["sample_notice_type"] = "success"
 
@@ -265,6 +272,12 @@ def add_sample(box_key):
         return
 
     st.session_state[state_key] = new_sample
+    try:
+        record_movement("Entrada", box["name"], toadd, new_sample[toadd])
+    except Exception as e:
+        st.session_state["sample_notice"] = f"La muestra se añadió, pero no se pudo registrar el movimiento: {e}"
+        st.session_state["sample_notice_type"] = "error"
+        return
     for widget_key in (
         letter_key, number_key, id_key, date_key, responsible_key,
         cryoprotectant_key, provenance_key,

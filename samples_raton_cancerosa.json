@@ -8,5 +8,15 @@
     "lugar_proveniencia": "Donación",
     "certificacion": true,
     "numero_celulas": "60"
+  },
+  "G,8": {
+    "id": "JG",
+    "fecha": "2026-10-15",
+    "responsable": "Andrea",
+    "numero_pases": "6",
+    "criopreservante": "Glicerol",
+    "lugar_proveniencia": "ORG",
+    "certificacion": true,
+    "numero_celulas": "808"
   }
 }
