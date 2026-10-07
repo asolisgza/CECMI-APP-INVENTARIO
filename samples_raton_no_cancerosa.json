@@ -1,0 +1,12 @@
+{
+  "C,7": {
+    "id": "GIJ",
+    "fecha": "2026-08-15",
+    "responsable": "Andrea",
+    "numero_pases": "3",
+    "criopreservante": "Glicerol",
+    "lugar_proveniencia": "Organización",
+    "certificacion": true,
+    "numero_celulas": "300"
+  }
+}

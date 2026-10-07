@@ -1,0 +1,12 @@
+{
+  "B,5": {
+    "id": "HEK",
+    "fecha": "2026-05-20",
+    "responsable": "Andrea",
+    "numero_pases": "5",
+    "criopreservante": "Glicerol",
+    "lugar_proveniencia": "Donación",
+    "certificacion": true,
+    "numero_celulas": "60"
+  }
+}

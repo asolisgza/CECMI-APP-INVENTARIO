@@ -1,0 +1,12 @@
+{
+  "A,1": {
+    "id": "MK",
+    "fecha": "2026-09-15",
+    "responsable": "Andrea",
+    "numero_pases": "20",
+    "criopreservante": "Glicerol",
+    "lugar_proveniencia": "Organización",
+    "certificacion": false,
+    "numero_celulas": "952"
+  }
+}
