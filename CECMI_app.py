@@ -6,22 +6,65 @@
 #Importar librerias--------------------------------------------------------
 import streamlit as st
 import pandas as pd
-import Mapa_muestras as MM
+import json
+import os
+
+APP_DIR = os.path.dirname(__file__)
+SAMPLE_BOXES = [
+    {
+        "name": "Caja criogénica humana cancerosa",
+        "path": os.path.join(APP_DIR, "samples.json"),
+        "default": {
+            "A,1": {"id": "M-101", "fecha": "2026-01-15"},
+            "A,3": {"id": "M-102", "fecha": "2026-02-10"},
+            "B,2": {"id": "M-103", "fecha": "2026-03-01"},
+            "C,5": {"id": "M-104", "fecha": "2026-03-20"},
+        },
+    },
+    {
+        "name": "Caja criogénica humana no cancerosa",
+        "path": os.path.join(APP_DIR, "samples_humana_no_cancerosa.json"),
+        "default": {},
+    },
+    {
+        "name": "Caja criogénica ratón cancerosa",
+        "path": os.path.join(APP_DIR, "samples_raton_cancerosa.json"),
+        "default": {},
+    },
+    {
+        "name": "Caja criogénica ratón no cancerosa",
+        "path": os.path.join(APP_DIR, "samples_raton_no_cancerosa.json"),
+        "default": {},
+    },
+]
+
+
+def load_samples(path, default=None):
+    """Load sample data from JSON, converting serialized locations to tuples."""
+    if not os.path.exists(path):
+        return default or {}
+
+    with open(path, "r", encoding="utf-8") as sample_file:
+        stored_samples = json.load(sample_file)
+    return {
+        tuple(part.strip() for part in location.split(",")): sample
+        for location, sample in stored_samples.items()
+    }
 
 # Read each box's persisted data so this dashboard reflects updates made on the map page.
 total_samples = sum(
-    len(MM.load_samples(box["path"], default=box["default"]))
-    for box in MM.BOXES
+    len(load_samples(box["path"], default=box["default"]))
+    for box in SAMPLE_BOXES
 )
-total_capacity = len(MM.BOXES) * 10 * 10
+total_capacity = len(SAMPLE_BOXES) * 10 * 10
 free_space_percentage = (total_capacity - total_samples) / total_capacity * 100
 
 
 def load_all_sample_rows():
     """Combine samples from every box into rows for the inventory search."""
     sample_rows = []
-    for box in MM.BOXES:
-        samples = MM.load_samples(box["path"], default=box["default"])
+    for box in SAMPLE_BOXES:
+        samples = load_samples(box["path"], default=box["default"])
         for (letter, number), sample in samples.items():
             certification = sample.get("certificacion")
             if certification is None:
@@ -188,7 +231,7 @@ st.write("Filtra las muestras por sus características. La ubicación se muestra
 with st.form("sample_search_form"):
     filter_row1 = st.columns(3)
     name_filter = filter_row1[0].text_input("Nombre de línea celular", key="search_name")
-    box_options = ["Todas las cajas"] + [box["name"] for box in MM.BOXES]
+    box_options = ["Todas las cajas"] + [box["name"] for box in SAMPLE_BOXES]
     box_filter = filter_row1[1].selectbox("Caja criogénica", box_options, key="search_box")
     responsible_filter = filter_row1[2].text_input("Responsable", key="search_responsible")
 
