@@ -8,6 +8,57 @@ import streamlit as st
 import pandas as pd
 import Mapa_muestras as MM
 
+# Read each box's persisted data so this dashboard reflects updates made on the map page.
+total_samples = sum(
+    len(MM.load_samples(box["path"], default=box["default"]))
+    for box in MM.BOXES
+)
+total_capacity = len(MM.BOXES) * 10 * 10
+free_space_percentage = (total_capacity - total_samples) / total_capacity * 100
+
+
+def load_all_sample_rows():
+    """Combine samples from every box into rows for the inventory search."""
+    sample_rows = []
+    for box in MM.BOXES:
+        samples = MM.load_samples(box["path"], default=box["default"])
+        for (letter, number), sample in samples.items():
+            certification = sample.get("certificacion")
+            if certification is None:
+                certification_label = "No registrado"
+            elif isinstance(certification, str):
+                certification_label = "Sí" if certification.strip().casefold() in {"sí", "si", "true", "1"} else "No"
+            else:
+                certification_label = "Sí" if certification else "No"
+
+            sample_rows.append({
+                "Nombre de línea": sample.get("id", ""),
+                "Caja criogénica": box["name"],
+                "Ubicación": f"{letter},{number}",
+                "Responsable": sample.get("responsable", ""),
+                "Fecha de congelación": sample.get("fecha", ""),
+                "Con certificado": certification_label,
+                "Número de pases": sample.get("numero_pases", ""),
+                "Criopreservante": sample.get("criopreservante", ""),
+                "Lugar de proveniencia": sample.get("lugar_proveniencia", ""),
+                "Número de células en el vial": sample.get("numero_celulas", ""),
+            })
+    return pd.DataFrame(
+        sample_rows,
+        columns=[
+            "Nombre de línea",
+            "Caja criogénica",
+            "Ubicación",
+            "Responsable",
+            "Fecha de congelación",
+            "Con certificado",
+            "Número de pases",
+            "Criopreservante",
+            "Lugar de proveniencia",
+            "Número de células en el vial",
+        ],
+    )
+
 #Funciones------------------------------------------------------------------
 
 #Funcion para asignar el color de fondo de tabla
@@ -43,18 +94,21 @@ st.html("""
         background-color: #DEF7FF;
         border-radius: 12px;
         padding: 16px;
+        min-height: 150px;
     }
 
     .st-key-my-samples {
         background-color: #DEF7FF;
         border-radius: 12px;
         padding: 16px;
+        min-height: 150px;
     }
 
     .st-key-my-free-space {
         background-color: #DEF7FF;
         border-radius: 12px;
         padding: 16px;
+        min-height: 150px;
     }    
 
     .st-key-my-extsamp {
@@ -98,54 +152,104 @@ st.header("Datos principales")
 col1, col2, col3 = st.columns(3)
 
 with col1:
-    with st.container(key="my-temperature", height = 125):
-        icon_col, text_col = st.columns(2)
+    with st.container(key="my-temperature", height=160):
+        icon_col, text_col = st.columns([1, 2])
 
         with icon_col:
-            st.image("thermometer.svg", width = 50)
+            st.image("thermometer.svg", width=75)
 
         with text_col:
             st.metric("Temperatura", "-80 °C")
 
 with col2:
-    with st.container(key="my-samples", height = 125):
-        icon_col, text_col = st.columns(2)
+    with st.container(key="my-samples", height=160):
+        icon_col, text_col = st.columns([1, 2])
         
         with icon_col:
-            st.image("real_sample.svg", width = 100)
+            st.image("real_sample.svg", width=115)
         
         with text_col:
-            st.metric("Muestras almacenadas", MM.num_samples_cont1)
+            st.metric("Muestras almacenadas", total_samples)
 
 with col3:
-    with st.container(key="my-free-space", height = 125):
-        icon_col, text_col = st.columns(2)
+    with st.container(key="my-free-space", height=160):
+        icon_col, text_col = st.columns([1, 2])
                 
         with icon_col:
-            st.image("sample.svg", width = 100)
+            st.image("sample.svg", width=115)
         
         with text_col:
-            st.metric("Espacio libre", f"{int(MM.por_free_space)}%")
+            st.metric("Espacio libre", f"{free_space_percentage:.1f}%")
 
-#Contenido principal
+#Buscador de muestras
+st.header("Buscador de muestras")
+st.write("Filtra las muestras por sus características. La ubicación se muestra en los resultados, pero no se usa como filtro.")
 
-extsamp, addsamp = st.columns(2)
+with st.form("sample_search_form"):
+    filter_row1 = st.columns(3)
+    name_filter = filter_row1[0].text_input("Nombre de línea celular", key="search_name")
+    box_options = ["Todas las cajas"] + [box["name"] for box in MM.BOXES]
+    box_filter = filter_row1[1].selectbox("Caja criogénica", box_options, key="search_box")
+    responsible_filter = filter_row1[2].text_input("Responsable", key="search_responsible")
 
-with extsamp:
-    with st.container(key="my-extsamp"):
-        st.subheader("Resumen de Muestras")
-        with st.expander("**Caja Criogénica 1**"):
-            for (row, col), info in st.session_state["sample"].items():
-                st.write(f"Ubicación: {row}-{col} | ID: {info['id']} | Fecha de ingreso: {info['fecha']}")
-        
-        
+    filter_row2 = st.columns(3)
+    date_filter = filter_row2[0].text_input("Fecha de congelación (AAAA-MM-DD)", key="search_date")
+    certification_filter = filter_row2[1].selectbox(
+        "Con certificado",
+        ["Todos", "Sí", "No", "No registrado"],
+        key="search_certification",
+    )
+    passages_filter = filter_row2[2].text_input("Número de pases", key="search_passages")
 
-with addsamp:
-    with st.container(key="my-add_ext"):
-        st.subheader("CONTENIDO")
-        
+    filter_row3 = st.columns(3)
+    cryoprotectant_filter = filter_row3[0].text_input("Criopreservante", key="search_cryoprotectant")
+    provenance_filter = filter_row3[1].text_input("Lugar de proveniencia", key="search_provenance")
+    cell_count_filter = filter_row3[2].text_input("Número de células en el vial", key="search_cell_count")
+    st.form_submit_button("Buscar muestras", use_container_width=True)
 
-with st.expander("Ver recomendaciones de seguridad ISBER"):
-    st.write("Mantener la puerta abierta por menos de 45 segundos.")
+inventory = load_all_sample_rows()
+filtered_inventory = inventory.copy()
+
+text_filters = {
+    "Nombre de línea": name_filter,
+    "Responsable": responsible_filter,
+    "Fecha de congelación": date_filter,
+    "Número de pases": passages_filter,
+    "Criopreservante": cryoprotectant_filter,
+    "Lugar de proveniencia": provenance_filter,
+    "Número de células en el vial": cell_count_filter,
+}
+for column_name, query in text_filters.items():
+    if query.strip():
+        filtered_inventory = filtered_inventory[
+            filtered_inventory[column_name].astype(str).str.contains(
+                query.strip(), case=False, na=False, regex=False
+            )
+        ]
+
+if box_filter != "Todas las cajas":
+    filtered_inventory = filtered_inventory[
+        filtered_inventory["Caja criogénica"] == box_filter
+    ]
+if certification_filter != "Todos":
+    filtered_inventory = filtered_inventory[
+        filtered_inventory["Con certificado"] == certification_filter
+    ]
+
+st.caption(f"Muestras encontradas: {len(filtered_inventory)} de {len(inventory)}")
+st.dataframe(filtered_inventory, hide_index=True, width="stretch")
+
+#Listar recomendaciones de seguridad
+st.subheader("Recomendaciones de seguridad")
+st.markdown(
+    """
+    - Mantener la puerta abierta por menos de 45 segundos.
+    - Registrar trazabilidad de principio a fin de cada vial.
+    - Evitar que distintos tipos de células o niveles de riesgo biológicos se mezclen.
+    - Las células más sensibles deben colocarse en las zonas centrales o inferiores.
+    - Tener indicadores visibles en cada caja criogénica.
+    - Mantener entre 10% y 15% de capacidad de almacenamiento libre.
+    """
+)
 
 
