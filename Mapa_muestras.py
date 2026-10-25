@@ -13,15 +13,18 @@ from google.auth.exceptions import GoogleAuthError
 from requests.exceptions import RequestException
 from streamlit_gsheets import GSheetsConnection
 
-from movements import record_movement
+from movements import (
+    MOVEMENT_COLUMNS,
+    MOVEMENTS_WORKSHEET,
+    clear_movement_sheet_cache,
+    record_movement,
+)
 
 #Funciones------------------------------------------------------------------
 SPREADSHEET_URL = (
     "https://docs.google.com/spreadsheets/d/"
     "17AfEVk6-HmFNwNxpngwp-cttRaFaqpZFnmRBAzDRUXo/edit"
 )
-MOVEMENT_WORKSHEET = "movements"
-MOVEMENT_COLUMNS = ["timestamp", "action", "box", "location", "sample_id"]
 SHEET_COLUMNS = [
     "ubicacion",
     "id",
@@ -147,11 +150,11 @@ def _movement_worksheet():
     credentials = st.secrets["connections"]["gsheets"].to_dict()
     client = service_account_from_dict(credentials)
     spreadsheet = client.open_by_url(SPREADSHEET_URL)
-    worksheet = spreadsheet.worksheet(MOVEMENT_WORKSHEET)
+    worksheet = spreadsheet.worksheet(MOVEMENTS_WORKSHEET)
     headers = worksheet.row_values(1)
     if headers != MOVEMENT_COLUMNS:
         raise ValueError(
-            f"La pestaña '{MOVEMENT_WORKSHEET}' debe tener estos encabezados "
+            f"La pestaña '{MOVEMENTS_WORKSHEET}' debe tener estos encabezados "
             f"en la fila 1, en este orden: {', '.join(MOVEMENT_COLUMNS)}"
         )
     return worksheet
@@ -173,11 +176,12 @@ def record_movement_in_sheets(action, box_name, location, sample):
             [movement[column] for column in MOVEMENT_COLUMNS],
             value_input_option="RAW",
         )
+        clear_movement_sheet_cache()
     except RequestException as exc:
         st.session_state["sample_notice"] = (
             f"La muestra se actualizó y el movimiento quedó en el registro local, "
             f"pero se interrumpió la conexión al guardar el movimiento en Google Sheets: "
-            f"{exc} Revise la pestaña '{MOVEMENT_WORKSHEET}' antes de volver a añadir "
+            f"{exc} Revise la pestaña '{MOVEMENTS_WORKSHEET}' antes de volver a añadir "
             "el movimiento manualmente, por si Google alcanzó a guardarlo."
         )
         st.session_state["sample_notice_type"] = "error"
@@ -192,7 +196,7 @@ def record_movement_in_sheets(action, box_name, location, sample):
     except (GSpreadException, GoogleAuthError, TimeoutError, ConnectionError) as exc:
         st.session_state["sample_notice"] = (
             f"La muestra se actualizó y el movimiento quedó en el registro local, "
-            f"pero no se pudo añadir a la pestaña de Google Sheets '{MOVEMENT_WORKSHEET}'. "
+            f"pero no se pudo añadir a la pestaña de Google Sheets '{MOVEMENTS_WORKSHEET}'. "
             f"Verifique que la pestaña exista y tenga los encabezados indicados "
             f"en GOOGLE_SHEETS_SETUP.md. Error: {exc}"
         )

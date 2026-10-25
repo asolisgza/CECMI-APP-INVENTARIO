@@ -7,7 +7,7 @@
 import pandas as pd
 import streamlit as st
 
-from movements import clear_movements, load_movements
+from movements import load_movements_from_sheet
 
 #Color de fondo principal, de la barra lateral, texto y botones
 #Código en CSS
@@ -83,43 +83,30 @@ st.html("""
 st.markdown("<h1 style='color: #191970;'>Registro de movimientos</h1>", unsafe_allow_html=True)
 
 try:
-	movements = load_movements()
-except (OSError, ValueError) as error:
-	st.error(f"No se pudo cargar el registro de movimientos: {error}")
+    movement_data = load_movements_from_sheet()
+except Exception as error:
+    st.error(f"No se pudo cargar el registro de movimientos de Google Sheets: {error}")
 else:
-	if movements:
-		confirm_clear = st.checkbox(
-			"Confirmo que deseo borrar todo el historial de movimientos"
-		)
-		if st.button("Borrar historial", disabled=not confirm_clear):
-			try:
-				clear_movements()
-			except OSError as error:
-				st.error(f"No se pudo borrar el registro de movimientos: {error}")
-			else:
-				movements = []
-				st.success("Se borró el historial. Las muestras de las cajas no se modificaron.")
-
-	if not movements:
-		st.info("Todavía no hay movimientos registrados.")
-	else:
-		movement_table = pd.DataFrame(movements).rename(columns={
-			"timestamp": "Fecha y hora",
-			"action": "Movimiento",
-			"box": "Caja criogénica",
-			"location": "Ubicación",
-			"sample_id": "ID de muestra",
-		})
-		movement_table["_sort_timestamp"] = pd.to_datetime(
-			movement_table["Fecha y hora"], errors="coerce", utc=True
-		)
-		movement_table = movement_table.sort_values(
-			"_sort_timestamp", ascending=False
-		).drop(columns="_sort_timestamp")
-		st.dataframe(movement_table, hide_index=True, width="stretch")
-		st.download_button(
-			"Descargar registro CSV",
-			data=movement_table.to_csv(index=False).encode("utf-8-sig"),
-			file_name="registro_movimientos.csv",
-			mime="text/csv",
-		)
+    if movement_data.empty:
+        st.info("Todavía no hay movimientos registrados.")
+    else:
+        movement_table = movement_data.rename(columns={
+            "timestamp": "Fecha y hora",
+            "action": "Movimiento",
+            "box": "Caja criogénica",
+            "location": "Ubicación",
+            "sample_id": "ID de muestra",
+        })
+        movement_table["_sort_timestamp"] = pd.to_datetime(
+            movement_table["Fecha y hora"], errors="coerce", utc=True
+        )
+        movement_table = movement_table.sort_values(
+            "_sort_timestamp", ascending=False
+        ).drop(columns="_sort_timestamp")
+        st.dataframe(movement_table, hide_index=True, width="stretch")
+        st.download_button(
+            "Descargar registro CSV",
+            data=movement_table.to_csv(index=False).encode("utf-8-sig"),
+            file_name="registro_movimientos.csv",
+            mime="text/csv",
+        )

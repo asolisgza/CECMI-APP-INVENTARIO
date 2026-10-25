@@ -2,7 +2,16 @@ import json
 import os
 from datetime import datetime
 
+import streamlit as st
+from streamlit_gsheets import GSheetsConnection
+
 MOVEMENTS_FILE = os.path.join(os.path.dirname(__file__), "movements.jsonl")
+SPREADSHEET_URL = (
+    "https://docs.google.com/spreadsheets/d/"
+    "17AfEVk6-HmFNwNxpngwp-cttRaFaqpZFnmRBAzDRUXo/edit"
+)
+MOVEMENTS_WORKSHEET = "movements"
+MOVEMENT_COLUMNS = ["timestamp", "action", "box", "location", "sample_id"]
 
 
 def record_movement(action, box_name, location, sample):
@@ -28,6 +37,27 @@ def load_movements():
             for line in movement_file
             if line.strip()
         ]
+
+
+@st.cache_data(ttl=30)
+def load_movements_from_sheet():
+    connection = st.connection("gsheets", type=GSheetsConnection)
+    movements = connection.read(
+        spreadsheet=SPREADSHEET_URL,
+        worksheet=MOVEMENTS_WORKSHEET,
+        ttl=0,
+    )
+    missing_columns = set(MOVEMENT_COLUMNS).difference(movements.columns)
+    if missing_columns:
+        raise ValueError(
+            f"La pestaña {MOVEMENTS_WORKSHEET} no tiene las columnas requeridas: "
+            f"{', '.join(sorted(missing_columns))}"
+        )
+    return movements.dropna(how="all")[MOVEMENT_COLUMNS].reset_index(drop=True)
+
+
+def clear_movement_sheet_cache():
+    load_movements_from_sheet.clear()
 
 
 def clear_movements():
