@@ -7,85 +7,131 @@
 #Importar librerias--------------------------------------------------------
 import streamlit as st
 import pandas as pd
-import json
-import os
+from streamlit_gsheets import GSheetsConnection
 
-APP_DIR = os.path.dirname(__file__)
+SPREADSHEET_URL = (
+    "https://docs.google.com/spreadsheets/d/"
+    "17AfEVk6-HmFNwNxpngwp-cttRaFaqpZFnmRBAzDRUXo/edit"
+)
+SHEET_COLUMNS = [
+    "ubicacion",
+    "id",
+    "fecha",
+    "responsable",
+    "numero_pases",
+    "criopreservante",
+    "lugar_proveniencia",
+    "certificacion",
+    "numero_celulas",
+]
 SAMPLE_BOXES = [
     {
+        "key": "humana_cancerosa",
         "name": "Caja criogénica humana cancerosa",
-        "path": os.path.join(APP_DIR, "samples.json"),
-        "default": {
-            "A,1": {"id": "M-101", "fecha": "2026-01-15"},
-            "A,3": {"id": "M-102", "fecha": "2026-02-10"},
-            "B,2": {"id": "M-103", "fecha": "2026-03-01"},
-            "C,5": {"id": "M-104", "fecha": "2026-03-20"},
-        },
+        "worksheet": "samples_humana_cancerosa",
     },
     {
+        "key": "humana_no_cancerosa",
         "name": "Caja criogénica humana no cancerosa",
-        "path": os.path.join(APP_DIR, "samples_humana_no_cancerosa.json"),
-        "default": {},
+        "worksheet": "samples_humana_no_cancerosa",
     },
     {
+        "key": "raton_cancerosa",
         "name": "Caja criogénica ratón cancerosa",
-        "path": os.path.join(APP_DIR, "samples_raton_cancerosa.json"),
-        "default": {},
+        "worksheet": "samples_raton_cancerosa",
     },
     {
+        "key": "raton_no_cancerosa",
         "name": "Caja criogénica ratón no cancerosa",
-        "path": os.path.join(APP_DIR, "samples_raton_no_cancerosa.json"),
-        "default": {},
+        "worksheet": "samples_raton_no_cancerosa",
     },
 ]
 
 
-def load_samples(path, default=None):
-    """Load sample data from JSON, converting serialized locations to tuples."""
-    if not os.path.exists(path):
-        return default or {}
+def _sheet_text(value):
+    if pd.isna(value):
+        return ""
+    if isinstance(value, pd.Timestamp):
+        return value.strftime("%Y-%m-%d")
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value).strip()
 
-    with open(path, "r", encoding="utf-8") as sample_file:
-        stored_samples = json.load(sample_file)
-    return {
-        tuple(part.strip() for part in location.split(",")): sample
-        for location, sample in stored_samples.items()
-    }
 
-# Read each box's persisted data so this dashboard reflects updates made on the map page.
-total_samples = sum(
-    len(load_samples(box["path"], default=box["default"]))
-    for box in SAMPLE_BOXES
-)
-total_capacity = len(SAMPLE_BOXES) * 10 * 10
-free_space_percentage = (total_capacity - total_samples) / total_capacity * 100
+def _parse_certification(value):
+    if isinstance(value, bool):
+        return value
+    text = _sheet_text(value).casefold()
+    if text in {"true", "verdadero", "sí", "si", "1"}:
+        return True
+    if text in {"false", "falso", "no", "0"}:
+        return False
+    if not text:
+        return None
+    raise ValueError(f"Valor no válido para certificación: {value}")
+
+
+@st.cache_data(ttl=30)
+def _read_sheet_data(worksheet):
+    connection = st.connection("gsheets", type=GSheetsConnection)
+    return connection.read(
+        spreadsheet=SPREADSHEET_URL,
+        worksheet=worksheet,
+        ttl=0,
+    )
+
+
+def read_sheet(box):
+    data = _read_sheet_data(box["worksheet"])
+    missing_columns = set(SHEET_COLUMNS).difference(data.columns)
+    if missing_columns:
+        raise ValueError(
+            f"La pestaña {box['worksheet']} no tiene las columnas requeridas: "
+            f"{', '.join(sorted(missing_columns))}"
+        )
+
+    data = data.dropna(how="all").copy()
+    valid_rows = []
+    for index, row in data.iterrows():
+        location = _sheet_text(row["ubicacion"])
+        if not location:
+            if any(_sheet_text(value) for value in row):
+                raise ValueError(
+                    f"Hay datos sin ubicación en la pestaña {box['worksheet']}."
+                )
+            continue
+        valid_rows.append(index)
+    return data.loc[valid_rows].reset_index(drop=True)
 
 
 def load_all_sample_rows():
-    """Combine samples from every box into rows for the inventory search."""
+    """Combine the four Google Sheets tabs into inventory rows."""
     sample_rows = []
     for box in SAMPLE_BOXES:
-        samples = load_samples(box["path"], default=box["default"])
-        for (letter, number), sample in samples.items():
-            certification = sample.get("certificacion")
+        data = read_sheet(box)
+        for _, sample in data.iterrows():
+            location = [part.strip() for part in _sheet_text(sample["ubicacion"]).split(",")]
+            if len(location) != 2 or not all(location):
+                raise ValueError(
+                    f"Ubicación no válida en Google Sheets: {sample['ubicacion']}"
+                )
+            certification = _parse_certification(sample["certificacion"])
             if certification is None:
                 certification_label = "No registrado"
-            elif isinstance(certification, str):
-                certification_label = "Sí" if certification.strip().casefold() in {"sí", "si", "true", "1"} else "No"
             else:
                 certification_label = "Sí" if certification else "No"
 
             sample_rows.append({
-                "Nombre de línea": sample.get("id", ""),
+                "Nombre de línea": _sheet_text(sample["id"]),
                 "Caja criogénica": box["name"],
-                "Ubicación": f"{letter},{number}",
-                "Responsable": sample.get("responsable", ""),
-                "Fecha de congelación": sample.get("fecha", ""),
+                "Ubicación": f"{location[0].upper()},{location[1]}",
+                "Responsable": _sheet_text(sample["responsable"]),
+                "Fecha de congelación": _sheet_text(sample["fecha"]),
                 "Con certificado": certification_label,
-                "Número de pases": sample.get("numero_pases", ""),
-                "Criopreservante": sample.get("criopreservante", ""),
-                "Lugar de proveniencia": sample.get("lugar_proveniencia", ""),
-                "Número de células en el vial": sample.get("numero_celulas", ""),
+                "Número de pases": _sheet_text(sample["numero_pases"]),
+                "Criopreservante": _sheet_text(sample["criopreservante"]),
+                "Lugar de proveniencia": _sheet_text(sample["lugar_proveniencia"]),
+                "Número de células en el vial": _sheet_text(sample["numero_celulas"]),
             })
     return pd.DataFrame(
         sample_rows,
@@ -102,6 +148,21 @@ def load_all_sample_rows():
             "Número de células en el vial",
         ],
     )
+
+
+try:
+    inventory = load_all_sample_rows()
+except Exception as exc:
+    st.error(
+        "No se pudieron cargar las muestras de Google Sheets. Verifique que "
+        "las cuatro pestañas y sus columnas coincidan con GOOGLE_SHEETS_SETUP.md."
+    )
+    st.exception(exc)
+    st.stop()
+
+total_samples = len(inventory)
+total_capacity = len(SAMPLE_BOXES) * 10 * 10
+free_space_percentage = (total_capacity - total_samples) / total_capacity * 100
 
 #Funciones------------------------------------------------------------------
 
@@ -251,7 +312,6 @@ with st.form("sample_search_form"):
     cell_count_filter = filter_row3[2].text_input("Número de células en el vial", key="search_cell_count")
     st.form_submit_button("Buscar muestras", use_container_width=True)
 
-inventory = load_all_sample_rows()
 filtered_inventory = inventory.copy()
 
 text_filters = {
@@ -295,5 +355,4 @@ st.markdown(
     - Mantener entre 10% y 15% de capacidad de almacenamiento libre.
     """
 )
-
 

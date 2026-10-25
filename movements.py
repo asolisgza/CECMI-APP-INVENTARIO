@@ -15,6 +15,7 @@ def record_movement(action, box_name, location, sample):
     }
     with open(MOVEMENTS_FILE, "a", encoding="utf-8") as movement_file:
         movement_file.write(json.dumps(movement, ensure_ascii=False) + "\n")
+    return movement
 
 
 def load_movements():

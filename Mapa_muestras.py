@@ -7,51 +7,200 @@
 #Importar librerias----------------------------------------------------
 import streamlit as st
 import pandas as pd
-#Para crear databases
-import os
-import json
-import tempfile 
+from gspread import service_account_from_dict
+from gspread.exceptions import GSpreadException
+from google.auth.exceptions import GoogleAuthError
+from requests.exceptions import RequestException
+from streamlit_gsheets import GSheetsConnection
+
 from movements import record_movement
 
 #Funciones------------------------------------------------------------------
-#Funcion para inicializar datos
-DATA_FILE = os.path.join(os.path.dirname(__file__), "samples.json")
+SPREADSHEET_URL = (
+    "https://docs.google.com/spreadsheets/d/"
+    "17AfEVk6-HmFNwNxpngwp-cttRaFaqpZFnmRBAzDRUXo/edit"
+)
+MOVEMENT_WORKSHEET = "movements"
+MOVEMENT_COLUMNS = ["timestamp", "action", "box", "location", "sample_id"]
+SHEET_COLUMNS = [
+    "ubicacion",
+    "id",
+    "fecha",
+    "responsable",
+    "numero_pases",
+    "criopreservante",
+    "lugar_proveniencia",
+    "certificacion",
+    "numero_celulas",
+]
+def _sheet_text(value):
+    if pd.isna(value):
+        return ""
+    if isinstance(value, pd.Timestamp):
+        return value.strftime("%Y-%m-%d")
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value).strip()
 
-# Funcion para convertir ("A", "1") a "A,1"
-def _serialize_samples(samples):
-    return {f"{k[0]},{k[1]}": v for k, v in samples.items()}
 
-# Funcion para convertir "A,1" a ("A", "1")
-def _deserialize_samples(obj):
-    # Be tolerant of spaces in keys (e.g., "A, 1") by stripping parts
-    result = {}
-    for k, v in obj.items():
-        parts = [p.strip() for p in k.split(",")]
-        result[tuple(parts)] = v
-    return result
+def _parse_certification(value):
+    if isinstance(value, bool):
+        return value
+    text = _sheet_text(value).casefold()
+    if text in {"true", "verdadero", "sí", "si", "1"}:
+        return True
+    if text in {"false", "falso", "no", "0"}:
+        return False
+    if not text:
+        return None
+    raise ValueError(f"Valor no válido para certificación: {value}")
 
 
-def save_samples(samples, path=DATA_FILE):
-    # Write atomically to avoid corrupting the file
-    tmp_fd, tmp_path = tempfile.mkstemp(prefix="samples_", suffix=".json", dir=os.path.dirname(path) or ".")
+def _parse_location(value):
+    parts = [part.strip() for part in _sheet_text(value).split(",")]
+    if len(parts) != 2 or not parts[0] or not parts[1]:
+        raise ValueError(f"Ubicación no válida en Google Sheets: {value}")
+    number = str(int(parts[1])) if parts[1].isdigit() else parts[1]
+    return parts[0].upper(), number
+
+
+@st.cache_data(ttl=30)
+def _read_sheet_data(worksheet):
+    connection = st.connection("gsheets", type=GSheetsConnection)
+    return connection.read(
+        spreadsheet=SPREADSHEET_URL,
+        worksheet=worksheet,
+        ttl=0,
+    )
+
+
+def read_sheet(box):
+    data = _read_sheet_data(box["worksheet"])
+    missing_columns = set(SHEET_COLUMNS).difference(data.columns)
+    if missing_columns:
+        raise ValueError(
+            f"La pestaña {box['worksheet']} no tiene las columnas requeridas: "
+            f"{', '.join(sorted(missing_columns))}"
+        )
+
+    data = data.dropna(how="all").copy()
+    valid_rows = []
+    for index, row in data.iterrows():
+        location = _sheet_text(row["ubicacion"])
+        if not location:
+            if any(_sheet_text(value) for value in row):
+                raise ValueError(
+                    f"Hay datos sin ubicación en la pestaña {box['worksheet']}."
+                )
+            continue
+        valid_rows.append(index)
+    return data.loc[valid_rows].reset_index(drop=True)
+
+
+def samples_from_sheet(data):
+    samples = {}
+    for _, row in data.iterrows():
+        location = _parse_location(row["ubicacion"])
+        if location in samples:
+            raise ValueError(f"Ubicación duplicada en Google Sheets: {location}")
+        samples[location] = {
+            "id": _sheet_text(row["id"]),
+            "fecha": _sheet_text(row["fecha"]),
+            "responsable": _sheet_text(row["responsable"]),
+            "numero_pases": _sheet_text(row["numero_pases"]),
+            "criopreservante": _sheet_text(row["criopreservante"]),
+            "lugar_proveniencia": _sheet_text(row["lugar_proveniencia"]),
+            "certificacion": _parse_certification(row["certificacion"]),
+            "numero_celulas": _sheet_text(row["numero_celulas"]),
+        }
+    return samples
+
+
+def append_sample_row(data, location, sample):
+    row = {column: "" for column in data.columns}
+    row.update(
+        {
+            "ubicacion": f"{location[0]},{location[1]}",
+            "id": sample["id"],
+            "fecha": sample["fecha"],
+            "responsable": sample["responsable"],
+            "numero_pases": sample["numero_pases"],
+            "criopreservante": sample["criopreservante"],
+            "lugar_proveniencia": sample["lugar_proveniencia"],
+            "certificacion": sample["certificacion"],
+            "numero_celulas": sample["numero_celulas"],
+        }
+    )
+    return pd.concat([data, pd.DataFrame([row])], ignore_index=True)
+
+
+def update_sheet(connection, box, data):
+    connection.update(
+        spreadsheet=SPREADSHEET_URL,
+        worksheet=box["worksheet"],
+        data=data,
+    )
+
+
+@st.cache_resource
+def _movement_worksheet():
+    credentials = st.secrets["connections"]["gsheets"].to_dict()
+    client = service_account_from_dict(credentials)
+    spreadsheet = client.open_by_url(SPREADSHEET_URL)
+    worksheet = spreadsheet.worksheet(MOVEMENT_WORKSHEET)
+    headers = worksheet.row_values(1)
+    if headers != MOVEMENT_COLUMNS:
+        raise ValueError(
+            f"La pestaña '{MOVEMENT_WORKSHEET}' debe tener estos encabezados "
+            f"en la fila 1, en este orden: {', '.join(MOVEMENT_COLUMNS)}"
+        )
+    return worksheet
+
+
+def record_movement_in_sheets(action, box_name, location, sample):
     try:
-        with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
-            json.dump(_serialize_samples(samples), f, ensure_ascii=False, indent=2)
-        os.replace(tmp_path, path)
-    except Exception:
-        try:
-            os.remove(tmp_path)
-        except Exception:
-            pass
-        raise
+        movement = record_movement(action, box_name, location, sample)
+    except OSError as exc:
+        st.session_state["sample_notice"] = (
+            f"La muestra se actualizó en Google Sheets, pero no se pudo guardar "
+            f"el movimiento en el registro local: {exc}"
+        )
+        st.session_state["sample_notice_type"] = "error"
+        return False
 
+    try:
+        _movement_worksheet().append_row(
+            [movement[column] for column in MOVEMENT_COLUMNS],
+            value_input_option="RAW",
+        )
+    except RequestException as exc:
+        st.session_state["sample_notice"] = (
+            f"La muestra se actualizó y el movimiento quedó en el registro local, "
+            f"pero se interrumpió la conexión al guardar el movimiento en Google Sheets: "
+            f"{exc} Revise la pestaña '{MOVEMENT_WORKSHEET}' antes de volver a añadir "
+            "el movimiento manualmente, por si Google alcanzó a guardarlo."
+        )
+        st.session_state["sample_notice_type"] = "error"
+        return False
+    except (AttributeError, KeyError, ValueError, OSError) as exc:
+        st.session_state["sample_notice"] = (
+            f"La muestra se actualizó y el movimiento quedó en el registro local, "
+            f"pero no se pudo configurar la pestaña de historial de Google Sheets: {exc}"
+        )
+        st.session_state["sample_notice_type"] = "error"
+        return False
+    except (GSpreadException, GoogleAuthError, TimeoutError, ConnectionError) as exc:
+        st.session_state["sample_notice"] = (
+            f"La muestra se actualizó y el movimiento quedó en el registro local, "
+            f"pero no se pudo añadir a la pestaña de Google Sheets '{MOVEMENT_WORKSHEET}'. "
+            f"Verifique que la pestaña exista y tenga los encabezados indicados "
+            f"en GOOGLE_SHEETS_SETUP.md. Error: {exc}"
+        )
+        st.session_state["sample_notice_type"] = "error"
+        return False
 
-def load_samples(path=DATA_FILE, default=None):
-    if os.path.exists(path):
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        return _deserialize_samples(data)
-    return default if default is not None else {}
+    return True
+
 
 #Funcion para asignar el color de fondo de tabla
 def assign_color_to_map(val):
@@ -129,97 +278,96 @@ st.html("""
 """)
 
 #Datos ----------------------------------------------------
-#TABLA DE DATOS
-#Tabla de contenedor 1--------------------------------------------------------
-
-_default_samples = {
-    ("A", "1"): {"id": "M-101", "fecha": "2026-01-15"},
-    ("A", "3"): {"id": "M-102", "fecha": "2026-02-10"},
-    ("B", "2"): {"id": "M-103", "fecha": "2026-03-01"},
-    ("C", "5"): {"id": "M-104", "fecha": "2026-03-20"},
-}
-
 BOXES = [
     {
         "key": "humana_cancerosa",
         "name": "Caja criogénica humana cancerosa",
-        "path": DATA_FILE,
-        "default": _default_samples,
+        "worksheet": "samples_humana_cancerosa",
     },
     {
         "key": "humana_no_cancerosa",
         "name": "Caja criogénica humana no cancerosa",
-        "path": os.path.join(os.path.dirname(__file__), "samples_humana_no_cancerosa.json"),
-        "default": {},
+        "worksheet": "samples_humana_no_cancerosa",
     },
     {
         "key": "raton_cancerosa",
         "name": "Caja criogénica ratón cancerosa",
-        "path": os.path.join(os.path.dirname(__file__), "samples_raton_cancerosa.json"),
-        "default": {},
+        "worksheet": "samples_raton_cancerosa",
     },
     {
         "key": "raton_no_cancerosa",
         "name": "Caja criogénica ratón no cancerosa",
-        "path": os.path.join(os.path.dirname(__file__), "samples_raton_no_cancerosa.json"),
-        "default": {},
+        "worksheet": "samples_raton_no_cancerosa",
     },
 ]
 BOXES_BY_KEY = {box["key"]: box for box in BOXES}
 
-# Each box uses its own session-state entry and JSON file. The existing samples.json
-# remains assigned to the original box so its data is preserved.
-for box in BOXES:
-    state_key = f"samples_{box['key']}"
-    if state_key not in st.session_state:
-        if box["key"] == "humana_cancerosa" and "sample" in st.session_state:
-            samples = st.session_state["sample"]
-        else:
-            samples = load_samples(box["path"], default=box["default"])
-        st.session_state[state_key] = samples
-        if box["key"] == "humana_cancerosa" and not os.path.exists(box["path"]):
-            save_samples(samples, box["path"])
+connection = st.connection("gsheets", type=GSheetsConnection)
+try:
+    samples_by_box = {
+        box["key"]: samples_from_sheet(read_sheet(box))
+        for box in BOXES
+    }
+except Exception as exc:
+    st.error(
+        "No se pudieron leer las muestras de Google Sheets. Esta app requiere "
+        "una cuenta de servicio configurada y compartida con la hoja. Si aparece "
+        "HTTP 429, Google limitó temporalmente las lecturas; espere un minuto y "
+        "vuelva a intentar. Consulte GOOGLE_SHEETS_SETUP.md para más información."
+    )
+    st.exception(exc)
+    st.stop()
 
 
 def remove_sample(box_key):
     box = BOXES_BY_KEY[box_key]
-    state_key = f"samples_{box_key}"
     letter_key = f"{box_key}_letter_ext"
     number_key = f"{box_key}_number_ext"
     letter = str(st.session_state.get(letter_key, "")).strip().upper()
     number = str(st.session_state.get(number_key, "")).strip()
+    if number.isdigit():
+        number = str(int(number))
     toremove = (letter, number)
-    current = st.session_state[state_key]
+
+    try:
+        sheet_data = read_sheet(box)
+        current = samples_from_sheet(sheet_data)
+    except Exception as e:
+        st.session_state["sample_notice"] = f"Error al leer Google Sheets: {e}"
+        st.session_state["sample_notice_type"] = "error"
+        return
 
     if toremove not in current:
         st.session_state["sample_notice"] = f"No existe muestra en la posición {toremove} de {box['name']}"
         st.session_state["sample_notice_type"] = "warning"
         return
 
-    new_sample = {k: v for k, v in current.items() if k != toremove}
     try:
-        save_samples(new_sample, box["path"])
+        remaining_rows = sheet_data[
+            sheet_data["ubicacion"].map(
+                lambda value: _parse_location(value) != toremove
+            )
+        ].reset_index(drop=True)
+        update_sheet(connection, box, remaining_rows)
+        _read_sheet_data.clear(box["worksheet"])
     except Exception as e:
-        st.session_state["sample_notice"] = f"Error al guardar cambios: {e}"
+        st.session_state["sample_notice"] = f"Error al guardar cambios en Google Sheets: {e}"
         st.session_state["sample_notice_type"] = "error"
         return
 
-    st.session_state[state_key] = new_sample
     st.session_state[letter_key] = ""
     st.session_state[number_key] = ""
-    try:
-        record_movement("Salida", box["name"], toremove, current[toremove])
-    except Exception as e:
-        st.session_state["sample_notice"] = f"La muestra se extrajo, pero no se pudo registrar el movimiento: {e}"
-        st.session_state["sample_notice_type"] = "error"
+    if not record_movement_in_sheets("Salida", box["name"], toremove, current[toremove]):
         return
-    st.session_state["sample_notice"] = f"Se removió la muestra en {toremove} de {box['name']} y se guardó en disco"
+    st.session_state["sample_notice"] = (
+        f"Se removió la muestra en {toremove} de {box['name']} y se guardó el "
+        "movimiento en Google Sheets"
+    )
     st.session_state["sample_notice_type"] = "success"
 
 
 def add_sample(box_key):
     box = BOXES_BY_KEY[box_key]
-    state_key = f"samples_{box_key}"
     letter_key = f"{box_key}_letter_add"
     number_key = f"{box_key}_number_add"
     id_key = f"{box_key}_id_add"
@@ -232,6 +380,8 @@ def add_sample(box_key):
     cell_count_key = f"{box_key}_celulas_add"
     letter = str(st.session_state.get(letter_key, "")).strip().upper()
     number = str(st.session_state.get(number_key, "")).strip()
+    if number.isdigit():
+        number = str(int(number))
     sample_id = str(st.session_state.get(id_key, "")).strip()
     fecha = str(st.session_state.get(date_key, "")).strip()
     responsable = str(st.session_state.get(responsible_key, "")).strip()
@@ -247,14 +397,20 @@ def add_sample(box_key):
         return
 
     toadd = (letter, number)
-    current = st.session_state[state_key]
+    try:
+        sheet_data = read_sheet(box)
+        current = samples_from_sheet(sheet_data)
+    except Exception as e:
+        st.session_state["sample_notice"] = f"Error al leer Google Sheets: {e}"
+        st.session_state["sample_notice_type"] = "error"
+        return
+
     if toadd in current:
         st.session_state["sample_notice"] = f"Ya existe una muestra en la posición {toadd} de {box['name']} (ID: {current[toadd].get('id')})."
         st.session_state["sample_notice_type"] = "warning"
         return
 
-    new_sample = {k: v for k, v in current.items()}
-    new_sample[toadd] = {
+    new_sample = {
         "id": sample_id,
         "fecha": fecha,
         "responsable": responsable,
@@ -265,18 +421,15 @@ def add_sample(box_key):
         "numero_celulas": numero_celulas,
     }
     try:
-        save_samples(new_sample, box["path"])
+        updated_rows = append_sample_row(sheet_data, toadd, new_sample)
+        update_sheet(connection, box, updated_rows)
+        _read_sheet_data.clear(box["worksheet"])
     except Exception as e:
-        st.session_state["sample_notice"] = f"Error al guardar cambios: {e}"
+        st.session_state["sample_notice"] = f"Error al guardar cambios en Google Sheets: {e}"
         st.session_state["sample_notice_type"] = "error"
         return
 
-    st.session_state[state_key] = new_sample
-    try:
-        record_movement("Entrada", box["name"], toadd, new_sample[toadd])
-    except Exception as e:
-        st.session_state["sample_notice"] = f"La muestra se añadió, pero no se pudo registrar el movimiento: {e}"
-        st.session_state["sample_notice_type"] = "error"
+    if not record_movement_in_sheets("Entrada", box["name"], toadd, new_sample):
         return
     for widget_key in (
         letter_key, number_key, id_key, date_key, responsible_key,
@@ -286,8 +439,12 @@ def add_sample(box_key):
     st.session_state[passages_key] = ""
     st.session_state[certification_key] = False
     st.session_state[cell_count_key] = ""
-    st.session_state["sample_notice"] = f"Se añadió la muestra en {toadd} (ID: {sample_id}) a {box['name']} y se guardó en disco"
+    st.session_state["sample_notice"] = (
+        f"Se añadió la muestra en {toadd} (ID: {sample_id}) a {box['name']} "
+        "y se guardó el movimiento en Google Sheets"
+    )
     st.session_state["sample_notice_type"] = "success"
+
 
 #Contenido de la página---------------------------------------------------
 
@@ -307,11 +464,9 @@ if "sample_notice" in st.session_state:
 #Display all four independent boxes
 rows = ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J"]
 columns = [str(i) for i in range(1, 11)]
-
 for box in BOXES:
     box_key = box["key"]
-    state_key = f"samples_{box_key}"
-    samples = st.session_state[state_key]
+    samples = samples_by_box[box_key]
 
     st.markdown(f'<span id="box-{box_key}"></span>', unsafe_allow_html=True)
     with st.container(key=f"box_{box_key}"):
@@ -361,45 +516,45 @@ for box in BOXES:
         extsamp, addsamp = st.columns(2)
         with extsamp:
             st.markdown('<p class="sample-form-subtitle">Extraer Muestra</p>', unsafe_allow_html=True)
-            st.write("Escriba la ubicación de la muestra que desea extraer")
-            st.text_input("Letra (Ej. A)", max_chars=1, key=f"{box_key}_letter_ext")
-            st.text_input("Número (Ej. 1)", max_chars=2, key=f"{box_key}_number_ext")
-            st.button(
-                "Extraer muestra",
-                use_container_width=True,
-                key=f"remove_{box_key}",
-                on_click=remove_sample,
-                args=(box_key,),
-            )
+            with st.form(key=f"remove_form_{box_key}"):
+                st.write("Escriba la ubicación de la muestra que desea extraer")
+                st.text_input("Letra (Ej. A)", max_chars=1, key=f"{box_key}_letter_ext")
+                st.text_input("Número (Ej. 1)", max_chars=2, key=f"{box_key}_number_ext")
+                st.form_submit_button(
+                    "Extraer muestra",
+                    use_container_width=True,
+                    key=f"remove_{box_key}",
+                    on_click=remove_sample,
+                    args=(box_key,),
+                )
 
         with addsamp:
             st.markdown('<p class="sample-form-subtitle">Añadir Muestra</p>', unsafe_allow_html=True)
-            st.write("Escriba la siguiente información de la muestra que desea añadir")
-            add_col1, add_col2 = st.columns(2)
-            add_col1.text_input("Ubicación: Letra (Ej. A)", max_chars=1, key=f"{box_key}_letter_add")
-            add_col2.text_input("Ubicación: Número (Ej. 1)", max_chars=2, key=f"{box_key}_number_add")
+            with st.form(key=f"add_form_{box_key}"):
+                st.write("Escriba la siguiente información de la muestra que desea añadir")
+                add_col1, add_col2 = st.columns(2)
+                add_col1.text_input("Ubicación: Letra (Ej. A)", max_chars=1, key=f"{box_key}_letter_add")
+                add_col2.text_input("Ubicación: Número (Ej. 1)", max_chars=2, key=f"{box_key}_number_add")
 
-            add_col1, add_col2 = st.columns(2)
-            add_col1.text_input("Nombre de línea celular (Ej. HeLa)", key=f"{box_key}_id_add")
-            add_col2.text_input("Fecha de Congelación (AAAA-MM-DD)", key=f"{box_key}_fecha_add")
+                add_col1, add_col2 = st.columns(2)
+                add_col1.text_input("Nombre de línea celular (Ej. HeLa)", key=f"{box_key}_id_add")
+                add_col2.text_input("Fecha de Congelación (AAAA-MM-DD)", key=f"{box_key}_fecha_add")
 
-            add_col1, add_col2 = st.columns(2)
-            add_col1.text_input("Responsable", key=f"{box_key}_responsable_add")
-            add_col2.text_input("Número de Pases", key=f"{box_key}_pases_add")
+                add_col1, add_col2 = st.columns(2)
+                add_col1.text_input("Responsable", key=f"{box_key}_responsable_add")
+                add_col2.text_input("Número de Pases", key=f"{box_key}_pases_add")
 
-            add_col1, add_col2 = st.columns(2)
-            add_col1.text_input("Criopreservante", key=f"{box_key}_criopreservante_add")
-            add_col2.text_input("Lugar de proveniencia", key=f"{box_key}_proveniencia_add")
+                add_col1, add_col2 = st.columns(2)
+                add_col1.text_input("Criopreservante", key=f"{box_key}_criopreservante_add")
+                add_col2.text_input("Lugar de proveniencia", key=f"{box_key}_proveniencia_add")
 
-            add_col1, add_col2 = st.columns(2)
-            add_col1.checkbox("Con certificación", key=f"{box_key}_certificacion_add")
-            add_col2.text_input("Número de células en el vial", key=f"{box_key}_celulas_add")
-            st.button(
-                "Añadir muestra",
-                use_container_width=True,
-                key=f"add_{box_key}",
-                on_click=add_sample,
-                args=(box_key,),
-            )
-
-
+                add_col1, add_col2 = st.columns(2)
+                add_col1.checkbox("Con certificación", key=f"{box_key}_certificacion_add")
+                add_col2.text_input("Número de células en el vial", key=f"{box_key}_celulas_add")
+                st.form_submit_button(
+                    "Añadir muestra",
+                    use_container_width=True,
+                    key=f"add_{box_key}",
+                    on_click=add_sample,
+                    args=(box_key,),
+                )
