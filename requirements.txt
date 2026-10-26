@@ -4,3 +4,4 @@ st-gsheets-connection
 gspread
 google-auth
 requests
+tzdata

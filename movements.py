@@ -1,11 +1,13 @@
 import json
 import os
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import streamlit as st
 from streamlit_gsheets import GSheetsConnection
 
 MOVEMENTS_FILE = os.path.join(os.path.dirname(__file__), "movements.jsonl")
+LOCAL_TIMEZONE = ZoneInfo("America/Monterrey")
 SPREADSHEET_URL = (
     "https://docs.google.com/spreadsheets/d/"
     "17AfEVk6-HmFNwNxpngwp-cttRaFaqpZFnmRBAzDRUXo/edit"
@@ -16,7 +18,7 @@ MOVEMENT_COLUMNS = ["timestamp", "action", "box", "location", "sample_id"]
 
 def record_movement(action, box_name, location, sample):
     movement = {
-        "timestamp": datetime.now().astimezone().isoformat(timespec="seconds"),
+        "timestamp": datetime.now(LOCAL_TIMEZONE).isoformat(timespec="seconds"),
         "action": action,
         "box": box_name,
         "location": f"{location[0]},{location[1]}",
